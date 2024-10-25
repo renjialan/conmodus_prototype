@@ -4,6 +4,18 @@ from retrieval import Retriever
 from langchain.chat_models import ChatOpenAI
 from langchain.schema import SystemMessage, HumanMessage, AIMessage
 
+__import__('pysqlite3')
+import sys
+sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
+
+from typing import List, Dict, Any
+import streamlit as st
+from retrieval import Retriever
+from langchain.chat_models import ChatOpenAI
+from langchain.schema import SystemMessage, HumanMessage, AIMessage
+
+
+
 class LMMentorBot:
     def __init__(self):
         self.chat = ChatOpenAI(
