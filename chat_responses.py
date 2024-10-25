@@ -1,166 +1,107 @@
-__import__('pysqlite3')
-import sys
-sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
-from langchain_openai import ChatOpenAI
-from langchain_anthropic import ChatAnthropic
-from langchain.chains import create_history_aware_retriever, create_retrieval_chain
-from langchain.chains.combine_documents import create_stuff_documents_chain
-from langchain_core.output_parsers import StrOutputParser
-from langchain_community.chat_message_histories import ChatMessageHistory
-from langchain_core.chat_history import BaseChatMessageHistory
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.runnables.history import RunnableWithMessageHistory
-from langchain.chains import create_history_aware_retriever
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-import os
-import asyncio
-from typing import AsyncGenerator
-from langsmith import Client 
+from typing import List, Dict, Any
 import streamlit as st
 from retrieval import Retriever
-
-
-
+from langchain.chat_models import ChatOpenAI
+from langchain.schema import SystemMessage, HumanMessage, AIMessage
 
 class LMMentorBot:
-
-    def format_docs(docs):
-        return "\n\n".join(doc.page_content for doc in docs)
-
     def __init__(self):
-
-        print("Starting Tara Assisstant -----------------------------------###")
-
-        os.environ["LANGCHAIN_TRACING_V2"] = "true"
-        os.environ["LANGCHAIN_ENDPOINT"] = "https://api.smith.langchain.com"
-        os.environ["LANGCHAIN_API_KEY"] = st.secrets["LANGCHAIN_API_KEY"]
-
-        client = Client()
-
-        print("Initializing RAG system")
-        retriever = Retriever()
-
-        # create retrievers for audit(dummy) and chat(rag)
-        rag_retriver = retriever.retriver_sim
-        dummy_retriever = retriever.retriever_dummy
-
-        print("Initializing LLM")
-        llm = ChatOpenAI(temperature=0.7, model= "gpt-4o-mini-2024-07-18", api_key=st.secrets["OPENAI_KEY"], streaming=True)
-        audit_summary_llm = ChatAnthropic(temperature=0.7, model="claude-3-5-sonnet-20240620", api_key=st.secrets["ANTHROPIC_KEY"])
-        dummy_llm = ChatOpenAI(temperature=0.7, model= "gpt-4o-mini-2024-07-18", api_key=st.secrets["OPENAI_KEY"], max_tokens=1)
-
-        # 
-        with open("retriever_prompt.txt", "r") as f:
-            retriever_prompt = f.read()
-
-        with open("audit_summary_prompt.txt", "r") as f:
-            audit_summary_prompt = f.read()
-
-        with open("tara_prompt.txt", "r") as f:
-            tara_prompt = f.read()
+        self.chat = ChatOpenAI(
+            temperature=0.7,
+            model_name="gpt-4",
+            openai_api_key=st.secrets["OPENAI_KEY"]
+        )
+        self.retriever = Retriever()
+        self.conversation_history = []
+        self.reflection_mode = False
         
-        retriever_template = ChatPromptTemplate.from_messages(
-            [
-                ("system", retriever_prompt),
-                MessagesPlaceholder("chat_history"),
-                ("human", "{input}"),
-            ]
-        )
-
-        tara_prompt_template = ChatPromptTemplate.from_messages(
-            [
-                ("system", tara_prompt),
-                MessagesPlaceholder("chat_history"),
-                ("human", "{input}"),
-            ]
-        )
-        audit_summary_template = ChatPromptTemplate.from_template(audit_summary_prompt)
-
-        history_aware_retriever = create_history_aware_retriever(
-            llm, rag_retriver, retriever_template
-        )
-
-        audit_retrevier = create_history_aware_retriever(
-            dummy_llm, dummy_retriever, retriever_template
-        )
-
-        print("Creating RAG chain")
+    def generate_reflection_prompt(self, topic: str) -> str:
+        """Generate a reflection prompt based on the topic."""
+        reflection_templates = {
+            "search": "Before we dive into searching algorithms, could you share what you already know about them?",
+            "sort": "Before we discuss sorting, what experience do you have with organizing data?",
+            "default": f"Before we explore this topic, could you share what you already know about {topic}?"
+        }
         
-        #create chain to insert documents for context (rag documents)
-        tara_chain = create_stuff_documents_chain(llm, tara_prompt_template)
+        # Determine which template to use
+        for key in reflection_templates:
+            if key in topic.lower():
+                return reflection_templates[key]
+        return reflection_templates["default"]
 
-        # chain that retrieves documents and then passes them to the question_answer_chain
-        self.audit_summary_chain = audit_summary_template | audit_summary_llm
-        # audit_text_chain2 = (
-        #     {"input": audit_summary_chain},
-        # )
+    def generate_follow_up_prompts(self, topic: str, user_response: str) -> List[str]:
+        """Generate contextual follow-up prompts based on the topic and user's response."""
+        system_prompt = f"""
+        Based on the user's response about {topic}, generate 2 engaging follow-up questions that:
+        1. Connect to their personal experience
+        2. Encourage deeper technical understanding
+        Keep each question concise and conversational.
+        """
+        
+        messages = [
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=user_response)
+        ]
+        
+        response = self.chat(messages)
+        # Split the response into individual questions
+        follow_ups = [q.strip() for q in response.content.split('\n') if q.strip()]
+        return follow_ups[:2]  # Return maximum 2 questions
 
-        rag_chain = create_retrieval_chain(history_aware_retriever, tara_chain)
-        audit_text_chain = create_retrieval_chain(audit_retrevier, tara_chain)
+    def get_response(self, user_input: str) -> str:
+        """Process user input and generate appropriate response."""
+        # Initialize conversation if it's empty
+        if not self.conversation_history:
+            # Check if this is a topic-based question
+            if "what is" in user_input.lower() or "how does" in user_input.lower():
+                self.reflection_mode = True
+                reflection_prompt = self.generate_reflection_prompt(user_input)
+                self.conversation_history.append({"role": "assistant", "content": reflection_prompt})
+                return reflection_prompt
 
-        print("Creating chat history")
-        self.store = {}
+        if self.reflection_mode:
+            # Generate follow-up questions based on user's reflection
+            follow_ups = self.generate_follow_up_prompts(
+                self.conversation_history[0]["content"], 
+                user_input
+            )
+            
+            # Construct response with follow-ups
+            response = "Thank you for sharing that! " + follow_ups[0]
+            self.reflection_mode = False  # Exit reflection mode
+            
+            # Store the interaction
+            self.conversation_history.append({"role": "user", "content": user_input})
+            self.conversation_history.append({"role": "assistant", "content": response})
+            
+            return response
 
-        def get_session_history(session_id: str) -> BaseChatMessageHistory:
-            if session_id not in self.store:
-                print("Creating new chat history for session_id", session_id)
-                self.store[session_id] = ChatMessageHistory()
-            return self.store[session_id]
-
-
-        self.conversational_rag_chain = RunnableWithMessageHistory(
-            rag_chain,
-            get_session_history,
-            input_messages_key="input",
-            history_messages_key="chat_history",
-            output_messages_key="answer",
-        )
-
-        self.conversational_chain_no_rag = RunnableWithMessageHistory(
-            audit_text_chain,
-            get_session_history,
-            input_messages_key="input",
-            history_messages_key="chat_history",
-            output_messages_key="answer",
-        )
-
-    def upload_degree_audit(self, text: str):
-        print("Uploading degree audit")
-        audit_summary = self.audit_summary_chain.invoke({"audit": text})
-        print("Finished summarizing audit")
-        for chunk in self.conversational_chain_no_rag.stream(
-            {"input": audit_summary.content},
-                config={
-                    "configurable": {"session_id": "abc123"}
-                },  # constructs a key "abc123" in `store`.
-            ):
-            if 'answer' in chunk.keys():
-                yield chunk.get("answer")
+        # Regular conversation flow
+        messages = [
+            SystemMessage(content="""You are a mentor helping students learn computer science concepts. 
+            Be encouraging and use the Socratic method to guide students to understanding.""")
+        ]
+        
+        # Add conversation history
+        for message in self.conversation_history:
+            if message["role"] == "user":
+                messages.append(HumanMessage(content=message["content"]))
             else:
-                continue
-        print(self.store["abc123"])
+                messages.append(AIMessage(content=message["content"]))
+        
+        # Add current user input
+        messages.append(HumanMessage(content=user_input))
+        
+        # Get response
+        response = self.chat(messages)
+        
+        # Store the interaction
+        self.conversation_history.append({"role": "user", "content": user_input})
+        self.conversation_history.append({"role": "assistant", "content": response.content})
+        
+        return response.content
 
-    def chat(self, text: str) -> str:
-        print("Chatting with Tara")
-        response = self.conversational_rag_chain.invoke(
-            {"input": text},
-                config={
-                    "configurable": {"session_id": "abc123"}
-                },  # constructs a key "abc123" in `store`.
-            )["answer"]
-        print(self.store["abc123"])
-        return response
-    
-    def chat_stream(self, text: str):
-        print("Chatting with Tara")
-        for chunk in self.conversational_rag_chain.stream(
-            {"input": text},
-                config={
-                    "configurable": {"session_id": "abc123"}
-                },  # constructs a key "abc123" in `store`.
-            ):
-            if 'answer' in chunk.keys():
-                yield chunk.get("answer")
-            else:
-                continue
-        print(self.store["abc123"])
+    def reset(self):
+        """Reset the conversation history."""
+        self.conversation_history = []
+        self.reflection_mode = False
