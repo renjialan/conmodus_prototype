@@ -5,3 +5,4 @@ external_data/*
 __pycache__/*
 testing_scripts/*
 .streamlit/secrets.toml
+client_secret.json
