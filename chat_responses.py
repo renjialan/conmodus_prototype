@@ -1,65 +1,120 @@
+import sys
+from typing import Dict, List, Any, Optional, AsyncGenerator
 import streamlit as st
-from typing import List, Dict, Any, Optional
-from langchain.chat_models import ChatOpenAI
-from langchain.schema import SystemMessage, HumanMessage, AIMessage
-from langchain.embeddings import OpenAIEmbeddings
-from langchain.vectorstores import Chroma
-
-import streamlit as st
-from typing import List, Dict, Any, Optional
-from langchain.chat_models import ChatOpenAI
-from langchain.schema import SystemMessage, HumanMessage, AIMessage
-from langchain.embeddings import OpenAIEmbeddings
-from langchain.vectorstores import Chroma
+from langchain_openai import ChatOpenAI
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.runnables.history import RunnableWithMessageHistory
+from langchain_core.chat_history import BaseChatMessageHistory
+from langchain.chains import create_history_aware_retriever, create_retrieval_chain
+from langchain.chains.combine_documents import create_stuff_documents_chain
+from langchain_community.chat_message_histories import ChatMessageHistory
 from langchain.text_splitter import CharacterTextSplitter
-from langchain.document_loaders import PyPDFLoader, TextLoader
+from langchain_community.document_loaders import PyPDFLoader, TextLoader
+from langchain_openai import OpenAIEmbeddings
+from langchain_community.vectorstores import Chroma
 import tempfile
 import os
 
 class LMMentorBot:
     def __init__(self):
         try:
+            # Initialize API keys and environment variables
             self.openai_key = st.secrets["OPENAI_KEY"]
-            self.chat = ChatOpenAI(
+            os.environ["LANGCHAIN_TRACING_V2"] = "true"
+            os.environ["LANGCHAIN_ENDPOINT"] = "https://api.smith.langchain.com"
+            os.environ["LANGCHAIN_API_KEY"] = st.secrets["LANGCHAIN_API_KEY"]
+
+            # Initialize core components
+            self.llm = ChatOpenAI(
                 temperature=0.7,
                 model_name="gpt-4",
-                openai_api_key=self.openai_key
+                openai_api_key=self.openai_key,
+                streaming=True
             )
             self.embeddings = OpenAIEmbeddings(openai_api_key=self.openai_key)
+            
         except KeyError:
-            st.error("OpenAI API key not found in secrets. Please add it to your Streamlit secrets.")
+            st.error("Required API keys not found in secrets. Please add them to your Streamlit secrets.")
             st.stop()
 
-        self.conversation_history = []
-        self.learning_stage = "initial"
-        self.uploaded_file_content = None
+        # Initialize storage and state
+        self.store = {}
         self.vector_store = None
+        self.setup_rag_chain()
+
+    def setup_rag_chain(self):
+        """Set up the RAG chain with prompts and retrievers"""
+        # Load prompts
+        with open("prompts/retriever_prompt.txt", "r") as f:
+            retriever_prompt = f.read()
         
+        with open("prompts/mentor_prompt.txt", "r") as f:
+            mentor_prompt = f.read()
+
+        # Create prompt templates
+        retriever_template = ChatPromptTemplate.from_messages([
+            ("system", retriever_prompt),
+            MessagesPlaceholder("chat_history"),
+            ("human", "{input}"),
+        ])
+
+        mentor_template = ChatPromptTemplate.from_messages([
+            ("system", mentor_prompt),
+            MessagesPlaceholder("chat_history"),
+            ("human", "{input}"),
+        ])
+
+        # Set up history-aware retriever if vector store exists
+        if self.vector_store:
+            history_aware_retriever = create_history_aware_retriever(
+                self.llm,
+                self.vector_store.as_retriever(),
+                retriever_template
+            )
+            
+            # Create RAG chain
+            document_chain = create_stuff_documents_chain(self.llm, mentor_template)
+            self.rag_chain = create_retrieval_chain(history_aware_retriever, document_chain)
+            
+            # Set up conversation history management
+            self.conversational_rag_chain = RunnableWithMessageHistory(
+                self.rag_chain,
+                self.get_session_history,
+                input_messages_key="input",
+                history_messages_key="chat_history",
+                output_messages_key="answer",
+            )
+
+    def get_session_history(self, session_id: str) -> BaseChatMessageHistory:
+        """Get or create chat history for a session"""
+        if session_id not in self.store:
+            self.store[session_id] = ChatMessageHistory()
+        return self.store[session_id]
+
     def upload_file(self, uploaded_file) -> str:
         """Process uploaded file and create vector store for context"""
         if uploaded_file is None:
             return "No file uploaded."
         
         try:
-            # Create a temporary directory to store the file
             with tempfile.TemporaryDirectory() as temp_dir:
                 file_path = os.path.join(temp_dir, uploaded_file.name)
                 
-                # Save uploaded file to temporary directory
+                # Save uploaded file
                 with open(file_path, "wb") as f:
                     f.write(uploaded_file.getvalue())
                 
-                # Load and process the file based on its type
+                # Load and process file based on type
                 if uploaded_file.name.endswith('.pdf'):
                     loader = PyPDFLoader(file_path)
-                    documents = loader.load()
                 elif uploaded_file.name.endswith('.txt'):
                     loader = TextLoader(file_path)
-                    documents = loader.load()
                 else:
                     return "Unsupported file type. Please upload a PDF or text file."
 
-                # Split documents into chunks
+                documents = loader.load()
+                
+                # Split documents
                 text_splitter = CharacterTextSplitter(
                     chunk_size=1000,
                     chunk_overlap=200,
@@ -70,234 +125,48 @@ class LMMentorBot:
                 # Create vector store
                 self.vector_store = Chroma.from_documents(
                     documents=splits,
-                    embedding=self.embeddings,
-                    persist_directory="./chroma_db"
+                    embedding=self.embeddings
                 )
 
-                return f"Successfully processed {uploaded_file.name}. You can now ask questions about its content."
+                # Reinitialize RAG chain with new vector store
+                self.setup_rag_chain()
+                
+                return f"Successfully processed {uploaded_file.name}. Ready for questions!"
 
         except Exception as e:
             return f"Error processing file: {str(e)}"
 
-    def process_query(self, user_input: str) -> str:
-        """Process user input and determine appropriate response strategy"""
-        self.conversation_history.append({"role": "user", "content": user_input})
-        
-        # If we have a vector store, search for relevant context
-        relevant_context = ""
-        if self.vector_store:
-            search_results = self.vector_store.similarity_search(user_input, k=3)
-            relevant_context = "\n".join([doc.page_content for doc in search_results])
-        
-        # Detect if the query is a code request
-        if self._is_code_request(user_input):
-            response = self._handle_code_request(user_input, relevant_context)
-        else:
-            response = self._generate_socratic_response(user_input, relevant_context)
+    def chat(self, text: str, session_id: str = "default") -> str:
+        """Process a chat message and return response"""
+        if not self.vector_store:
+            return "Please upload a document first to enable context-aware responses."
 
-        self.conversation_history.append({"role": "assistant", "content": response})
-        return response
+        try:
+            response = self.conversational_rag_chain.invoke(
+                {"input": text},
+                config={"configurable": {"session_id": session_id}}
+            )
+            return response["answer"]
+        except Exception as e:
+            return f"Error processing message: {str(e)}"
 
-    def _generate_socratic_response(self, query: str, context: str = "") -> str:
-        """Generate a response using the Socratic method"""
-        system_prompt = """You are TARA, a Technical Assistant for Responsible AI learning. 
-        Using the Socratic method:
-        1. Ask thought-provoking questions related to the query
-        2. Guide the student towards discovering the answer
-        3. Encourage critical thinking and self-reflection
-        4. Break down complex concepts into manageable parts
-        
-        If context is provided, use it to inform your response while maintaining the Socratic approach."""
+    def chat_stream(self, text: str, session_id: str = "default"):
+        """Stream chat responses"""
+        if not self.vector_store:
+            yield "Please upload a document first to enable context-aware responses."
+            return
 
-        messages = [
-            SystemMessage(content=system_prompt),
-            SystemMessage(content=f"Context from uploaded documents:\n{context}" if context else "No additional context provided."),
-            HumanMessage(content=query)
-        ]
+        try:
+            for chunk in self.conversational_rag_chain.stream(
+                {"input": text},
+                config={"configurable": {"session_id": session_id}}
+            ):
+                if 'answer' in chunk:
+                    yield chunk["answer"]
+        except Exception as e:
+            yield f"Error processing message: {str(e)}"
 
-        response = self.chat(messages)
-        return response.content
-
-    def _handle_code_request(self, query: str, context: str = "") -> str:
-        """Handle code-related queries with an educational approach"""
-        if self.learning_stage == "initial":
-            return self._generate_initial_guidance(query, context)
-        elif self.learning_stage == "planning":
-            return self._review_user_plan(query, context)
-        elif self.learning_stage == "implementation":
-            return self._provide_implementation_guidance(query, context)
-        else:  # review
-            return self._review_code_understanding(query, context)
-
-    # Update other methods to include context parameter
-    def _generate_initial_guidance(self, query: str, context: str = "") -> str:
-        system_prompt = """You are TARA, a Technical Assistant for Responsible AI learning. 
-        When responding to code requests:
-        1. Reference any relevant information from the uploaded documents
-        2. Acknowledge the request
-        3. Explain why it's important to understand the concepts first
-        4. Encourage the user to try planning their solution
-        5. Ask them to write pseudo-code or describe their approach
-        6. Offer to break down the problem into smaller steps
-        
-        Use a friendly, encouraging tone while maintaining educational value."""
-
-        messages = [
-            SystemMessage(content=system_prompt),
-            SystemMessage(content=f"Context from uploaded documents:\n{context}" if context else "No additional context provided."),
-            HumanMessage(content=f"User is requesting code for: {query}")
-        ]
-
-        response = self.chat(messages)
-        self.learning_stage = "planning"
-        return response.content
-
-    def reset(self):
-        """Reset the conversation state"""
-        self.conversation_history = []
-        self.learning_stage = "initial"
-        self.uploaded_file_content = None
-        self.vector_store = None
- 
-    def process_query(self, user_input: str) -> str:
-        """Process user input and determine appropriate response strategy"""
-        self.conversation_history.append({"role": "user", "content": user_input})
-        
-        # Detect if the query is a code request
-        if self._is_code_request(user_input):
-            response = self._handle_code_request(user_input)
-        else:
-            response = self._generate_socratic_response(user_input)
-
-        self.conversation_history.append({"role": "assistant", "content": response})
-        return response
-
-    def _is_code_request(self, query: str) -> bool:
-        """Detect if the query is asking for code"""
-        code_indicators = [
-            "code", "example", "implement", "write", "create", "build",
-            "how to make", "develop", "script", "program", "function",
-            "class", "style", "css", "html", "javascript", "python"
-        ]
-        return any(indicator in query.lower() for indicator in code_indicators)
-
-    def _handle_code_request(self, query: str) -> str:
-        """Handle code-related queries with an educational approach"""
-        if self.learning_stage == "initial":
-            return self._generate_initial_guidance(query)
-        elif self.learning_stage == "planning":
-            return self._review_user_plan(query)
-        elif self.learning_stage == "implementation":
-            return self._provide_implementation_guidance(query)
-        else:  # review
-            return self._review_code_understanding(query)
-
-    def _generate_initial_guidance(self, query: str) -> str:
-        """Generate initial guidance for code requests"""
-        system_prompt = """You are TARA, a Technical Assistant for Responsible AI learning. 
-        When responding to code requests:
-        1. Acknowledge the request
-        2. Explain why it's important to understand the concepts first
-        3. Encourage the user to try planning their solution
-        4. Ask them to write pseudo-code or describe their approach
-        5. Offer to break down the problem into smaller steps
-        6. Remind them that while AI can provide code, understanding is crucial for learning
-        
-        Use a friendly, encouraging tone while maintaining educational value."""
-
-        messages = [
-            SystemMessage(content=system_prompt),
-            HumanMessage(content=f"User is requesting code for: {query}")
-        ]
-
-        response = self.chat(messages)
-        self.learning_stage = "planning"
-        return response.content
-
-    def _review_user_plan(self, user_input: str) -> str:
-        """Review user's planned approach and provide feedback"""
-        system_prompt = """Review the user's approach and:
-        1. Acknowledge their effort
-        2. Point out good aspects of their plan
-        3. Identify potential improvements
-        4. Ask guiding questions about missing considerations
-        5. Offer suggestions for better approaches if needed
-        
-        If they haven't provided a plan, gently remind them to share their thoughts first."""
-
-        messages = [
-            SystemMessage(content=system_prompt),
-            *[HumanMessage(content=m["content"]) if m["role"] == "user" else 
-              AIMessage(content=m["content"]) for m in self.conversation_history[-3:]]
-        ]
-
-        response = self.chat(messages)
-        
-        # If user has provided a reasonable plan, move to implementation
-        if "pseudo" in user_input.lower() or "plan" in user_input.lower():
-            self.learning_stage = "implementation"
-        
-        return response.content
-
-    def _provide_implementation_guidance(self, query: str) -> str:
-        """Provide implementation guidance with explanations"""
-        system_prompt = """Provide code guidance by:
-        1. Showing a basic implementation
-        2. Explaining each part of the code
-        3. Asking the user to explain how certain parts work
-        4. Suggesting modifications they can try
-        5. Providing resources for further learning
-        
-        Include comments in the code to aid understanding."""
-
-        messages = [
-            SystemMessage(content=system_prompt),
-            *[HumanMessage(content=m["content"]) if m["role"] == "user" else 
-              AIMessage(content=m["content"]) for m in self.conversation_history[-3:]]
-        ]
-
-        response = self.chat(messages)
-        self.learning_stage = "review"
-        return response.content
-
-    def _review_code_understanding(self, user_input: str) -> str:
-        """Review user's understanding of the code"""
-        system_prompt = """Check understanding by:
-        1. Asking specific questions about the code
-        2. Encouraging modifications and experimentation
-        3. Suggesting additional features they could add
-        4. Providing tips for best practices
-        5. Offering resources for deeper learning
-        
-        Maintain a supportive tone while ensuring learning objectives are met."""
-
-        messages = [
-            SystemMessage(content=system_prompt),
-            *[HumanMessage(content=m["content"]) if m["role"] == "user" else 
-              AIMessage(content=m["content"]) for m in self.conversation_history[-3:]]
-        ]
-
-        response = self.chat(messages)
-        self.learning_stage = "initial"  # Reset for next interaction
-        return response.content
-
-    def _generate_socratic_response(self, query: str) -> str:
-        """Generate a response using the Socratic method for non-code queries"""
-        system_prompt = """Using the Socratic method:
-        1. Ask thought-provoking questions related to the query
-        2. Guide the student towards discovering the answer
-        3. Encourage critical thinking and self-reflection
-        4. Break down complex concepts into manageable parts"""
-
-        messages = [
-            SystemMessage(content=system_prompt),
-            HumanMessage(content=query)
-        ]
-
-        response = self.chat(messages)
-        return response.content
-
-    def reset(self):
-        """Reset the conversation state"""
-        self.conversation_history = []
-        self.learning_stage = "initial"
+    def reset(self, session_id: str = "default"):
+        """Reset the conversation state for a session"""
+        if session_id in self.store:
+            del self.store[session_id]
