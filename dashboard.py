@@ -4,6 +4,8 @@ sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
 
 import streamlit as st
 from chat_responses import LMMentorBot
+from audit_parse import extract_text_fromaudit
+from feedback import append_values
 
 # Set page configuration
 st.set_page_config(
@@ -11,27 +13,8 @@ st.set_page_config(
     page_icon="🤖",
     layout="wide"
 )
-uploaded_file = st.sidebar.file_uploader(
-    "Upload a file for context (PDF or TXT)",
-    type=["pdf", "txt"],
-    help="Upload a file to provide context for our conversation. Conmodus will use this information to provide more relevant responses."
-)
 
-# Process uploaded file
-if uploaded_file and "file_processed" not in st.session_state:
-    with st.spinner("Processing file..."):
-        response = st.session_state.chatBot.upload_file(uploaded_file)
-        st.sidebar.success(response)
-        st.session_state.file_processed = True
-
-# Add file status indicator
-if "file_processed" in st.session_state:
-    st.sidebar.info(f"Currently using: {uploaded_file.name}")
-    if st.sidebar.button("Remove File Context"):
-        st.session_state.chatBot.reset()
-        del st.session_state.file_processed
-        st.rerun()
-# Add custom CSS
+# Custom CSS (unchanged)
 st.markdown("""
     <style>
     .stApp {
@@ -57,30 +40,6 @@ st.markdown("""
         font-size: 1.1em;
         line-height: 1.6;
     }
-    .quiz-mode {
-        background-color: #2c3e50;
-        color: #ecf0f1;
-        padding: 1rem;
-        border-radius: 10px;
-        margin: 1rem 0;
-    }
-    .quiz-mode a {
-        color: #3498db;
-        text-decoration: underline;
-    }
-    .quiz-mode strong, .quiz-mode b {
-        color: #f39c12;
-    }
-    .quiz-mode em, .quiz-mode i {
-        color: #2ecc71;
-    }
-    .socratic-mode {
-        background-color: #d4edda;
-        color: #333333;
-        padding: 1rem;
-        border-radius: 10px;
-        margin: 1rem 0;
-    }
     .message-container {
         margin-bottom: 1.5rem;
     }
@@ -92,27 +51,47 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# Initialize session state
-if "chatBot" not in st.session_state:
-    st.session_state.chatBot = LMMentorBot()
-
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-
-# Header with improved styling
+# Header
 st.title("👩‍💻 Conmodus - Technical Assistant for Responsible AI")
 st.markdown("""
     <div class="header-description">
     Welcome! I'm Conmodus, your AI learning companion. Through our dialogue, I'll help you:
     
-    • Understand programming concepts through guided discovery
-    • Learn about AI and its responsible use in technology
+    • Understand course concepts through guided discovery
+    • Master the material and find answers through conversation
     • Develop technical skills at your own pace
     • Think critically about software development
-    
-    Ask me anything about programming, AI, or technology!
     </div>
     """, unsafe_allow_html=True)
+
+# Initialize chat bot
+if "chatBot" not in st.session_state:
+    st.session_state.chatBot = LMMentorBot()
+
+# Initialize chat history
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
+# Sidebar for file upload
+with st.sidebar:
+    uploaded_file = st.file_uploader(
+        "Upload a file for context (PDF or TXT)",
+        type=["pdf", "txt"],
+        help="Upload a file to provide context for our conversation. Conmodus will use this information to provide more relevant responses."
+    )
+
+    if uploaded_file and "file_processed" not in st.session_state:
+        with st.spinner("Processing file..."):
+            response = st.session_state.chatBot.upload_file(uploaded_file)
+            st.sidebar.success(response)
+            st.session_state.file_processed = True
+
+    if "file_processed" in st.session_state:
+        st.sidebar.info(f"Currently using: {uploaded_file.name}")
+        if st.sidebar.button("Remove File Context"):
+            st.session_state.chatBot.reset()
+            del st.session_state.file_processed
+            st.rerun()
 
 # Main chat interface
 chat_container = st.container()
@@ -133,24 +112,36 @@ if prompt := st.chat_input("What would you like to learn about?"):
     st.session_state.messages.append({"role": "user", "content": prompt})
 
     # Get bot response
-    response = st.session_state.chatBot.process_query(prompt)
-    
-    # Display assistant response
     with st.chat_message("assistant"):
-        st.markdown(f"<div class='assistant-message'>{response}</div>", 
-                   unsafe_allow_html=True)
-    st.session_state.messages.append({"role": "assistant", "content": response})
+        message_placeholder = st.empty()
+        full_response = ""
+        
+        # Stream the response
+        for chunk in st.session_state.chatBot.chat_stream(prompt):
+            full_response += chunk
+            message_placeholder.markdown(f"<div class='assistant-message'>{full_response}</div>", 
+                                      unsafe_allow_html=True)
+    
+    # Store the full response
+    st.session_state.messages.append({"role": "assistant", "content": full_response})
 
-# Reset conversation button (simplified)
-if st.button("Start New Conversation"):
-    st.session_state.chatBot.reset()
-    st.session_state.messages = []
-    st.rerun()
+# Feedback
+# selected = st.feedback("thumbs")
+# if selected is not None:
+#     sentiment = "Negative" if selected == 0 else "Positive"
+#     append_values("1WAuUGd130tEnsjFzaYy7Tgq5H3zh-vvp7WXlg9WPNAs", "Sheet1!A1:C1", "USER_ENTERED", [["Session id: Test", str(st.session_state.messages), sentiment]])
+#     st.success("Thank you for your feedback!")
+
+# # Reset conversation button
+# if st.button("Start New Conversation"):
+#     st.session_state.chatBot.reset()
+#     st.session_state.messages = []
+#     st.rerun()
 
 # Footer
 st.markdown("---")
 st.markdown("""
     <div style='text-align: center; color: #666;'>
-    Powered by Conmodous | Making technical education more accessible and supportive
+    Powered by Conmodus | Making technical education more accessible and supportive
     </div>
     """, unsafe_allow_html=True)
