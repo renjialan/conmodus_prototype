@@ -22,3 +22,8 @@ When retrieving information:
    - Potential follow-up questions
 
 Remember: The goal is to find information that enables Socratic dialogue, not just direct answers.
+
+Current conversation:
+{chat_history}
+
+Question: {input}

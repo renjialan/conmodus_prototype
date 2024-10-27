@@ -34,74 +34,70 @@ class LMMentorBot:
             st.stop()
 
         # Initialize storage and state
-        self.store: Dict[str, ChatMessageHistory] = {}
-        self.vector_store: Optional[Chroma] = None
-        self.default_chain = None
-        self.rag_chain = None
-
+        self.store = {}
+        self.vector_store = None
         
-        # Setup default conversation chain
-        self.setup_default_chain()
-
-    def setup_environment(self):
-        """Setup environment variables"""
-        import os
-        os.environ["LANGCHAIN_TRACING_V2"] = "true"
-        os.environ["LANGCHAIN_ENDPOINT"] = "https://api.smith.langchain.com"
-        os.environ["LANGCHAIN_API_KEY"] = st.secrets["LANGCHAIN_API_KEY"]
-
-    def setup_default_chain(self):
-        """Set up the default conversation chain without RAG"""
-        with open("prompts/mentor_prompt.txt", "r") as f:
-            mentor_prompt = f.read()
-
-        default_template = ChatPromptTemplate.from_messages([
-            ("system", mentor_prompt),
+        # Load prompts
+        self.retriever_prompt = self._load_prompt("prompts/retriever_prompt.txt")
+        self.mentor_prompt = self._load_prompt("prompts/mentor_prompt.txt")
+        # ADD THIS: Create a default template for non-RAG conversations
+        self.default_template = ChatPromptTemplate.from_messages([
+            ("system", self.mentor_prompt),
             MessagesPlaceholder("chat_history"),
-            ("human", "{input}"),
+            ("human", "{input}")
         ])
+        self.setup_rag_chain()
+        self.setup_socratic_prompts()
+        
+        
+        
 
-        self.default_chain = RunnableWithMessageHistory(
-            (lambda x: {"input": x["input"], "context": "", "chat_history": x["chat_history"]}) | 
-            default_template | 
-            self.llm.bind(response_format={"type": "text"}),  # Add this line
-            self.get_session_history,
-            input_messages_key="input",
-            history_messages_key="chat_history",
-            output_messages_key="output"
-        )
+    def _load_prompt(self, file_path: str) -> str:
+        
+            with open(file_path, "r") as f:
+                return f.read()
+        
 
+    
+    def setup_socratic_prompts(self):
+        self.socratic_prompts = {
+            "default": [
+                "Before we dive into that, what do you already know about this topic?",
+                "How do you think this concept might relate to other things you've learned?",
+                "Can you think of any real-world applications for this idea?",
+                "What aspects of this topic are you most curious about?"
+            ]
+        }
+        self.socratic_index = {}
+
+    
     def setup_rag_chain(self):
         """Set up the RAG chain with prompts and retrievers"""
         if not self.vector_store:
             return
-
-        # Load prompts
-        with open("prompts/retriever_prompt.txt", "r") as f:
-            retriever_prompt = f.read()
         
-        with open("prompts/mentor_prompt.txt", "r") as f:
-            mentor_prompt = f.read()
-
         # Create prompt templates
         retriever_template = ChatPromptTemplate.from_messages([
-            ("system", retriever_prompt),
-            MessagesPlaceholder("chat_history"),
+            ("system", self.retriever_prompt),
+            MessagesPlaceholder(variable_name="chat_history"),
             ("human", "{input}"),
         ])
 
+        # MODIFIED: Update mentor template to handle context differently
         mentor_template = ChatPromptTemplate.from_messages([
-            ("system", mentor_prompt),
-            MessagesPlaceholder("chat_history"),
-            ("human", "{input}"),
-            ("system", "Context: {context}")
+            ("system", self.mentor_prompt),
+            ("system", "Here is the relevant context: {context}"),
+            MessagesPlaceholder(variable_name="chat_history"),
+            ("human", "{input}")
         ])
-
+        
         # Set up history-aware retriever
         retriever = self.vector_store.as_retriever(
             search_type="similarity",
             search_kwargs={"k": 4}
         )
+        retrieved_docs = retriever.get_relevant_documents("test input")
+        print(f"Retrieved {len(retrieved_docs)} documents")  # Debugging line
         
         history_aware_retriever = create_history_aware_retriever(
             self.llm,
@@ -109,42 +105,74 @@ class LMMentorBot:
             retriever_template
         )
         
-        # Create document chain
+        # MODIFIED: Create document chain with specific configuration
         document_chain = create_stuff_documents_chain(
-            llm=self.llm.bind(response_format={"type": "text"}),
+            llm=self.llm,
             prompt=mentor_template,
-            document_variable_name="context"
+            document_variable_name="context",
         )
         
-        # Create retrieval chain with proper chat history handling
-        retrieval_chain = (
-            {
-                "context": history_aware_retriever, 
-                "input": lambda x: x["input"],
-                "chat_history": lambda x: x.get("chat_history", [])
-            } 
-            | document_chain
+        # MODIFIED: Create retrieval chain with specific configuration
+        self.rag_chain = create_retrieval_chain(
+            retriever=history_aware_retriever,
+            combine_docs_chain=document_chain,
+            return_source_documents=True,
         )
         
-        # Wrap in RunnableWithMessageHistory
-        self.rag_chain = RunnableWithMessageHistory(
-            retrieval_chain,
-            self.get_session_history,
+        # MODIFIED: Update conversation chain configuration
+        self.conversational_rag_chain = RunnableWithMessageHistory(
+            runnable=self.rag_chain,
+            message_history_provider=self.get_session_history,
             input_messages_key="input",
             history_messages_key="chat_history",
-            output_messages_key="output"
-        )
+            output_messages_key="answer",
+        )   
     def get_session_history(self, session_id: str) -> BaseChatMessageHistory:
         """Get or create chat history for a session"""
         if session_id not in self.store:
             self.store[session_id] = ChatMessageHistory()
         return self.store[session_id]
 
+    
+
     def upload_file(self, uploaded_file) -> str:
         """Process uploaded file and create vector store for context"""
+        if uploaded_file is None:
+            return "No file uploaded."
+        
         try:
-            self.vector_store = self.file_parser.parse_file(uploaded_file)
-            if self.vector_store:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                file_path = os.path.join(temp_dir, uploaded_file.name)
+                
+                # Save uploaded file
+                with open(file_path, "wb") as f:
+                    f.write(uploaded_file.getvalue())
+                
+                # Load and process file based on type
+                if uploaded_file.name.endswith('.pdf'):
+                    loader = PyPDFLoader(file_path)
+                elif uploaded_file.name.endswith('.txt'):
+                    loader = TextLoader(file_path)
+                else:
+                    return "Unsupported file type. Please upload a PDF or text file."
+
+                documents = loader.load()
+                
+                # Split documents
+                text_splitter = CharacterTextSplitter(
+                    chunk_size=1000,
+                    chunk_overlap=200,
+                    length_function=len
+                )
+                splits = text_splitter.split_documents(documents)
+
+                # Create vector store
+                self.vector_store = Chroma.from_documents(
+                    documents=splits,
+                    embedding=self.embeddings
+                )
+                print(f"Vector store initialized: {self.vector_store is not None}")  # Debugging line
+                # Reinitialize RAG chain with new vector store
                 self.setup_rag_chain()
                 return f"Successfully processed {uploaded_file.name}. Ready for context-aware responses!"
             return "No file uploaded."
@@ -154,67 +182,78 @@ class LMMentorBot:
     def chat(self, text: str, session_id: str = "default") -> str:
         """Process a chat message and return response"""
         try:
-            # Use RAG chain if available, otherwise use default chain
-            chain = self.rag_chain if self.vector_store else self.default_chain
-            response = chain.invoke(
-                {"input": text},
+            if not self.vector_store:
+                # Non-RAG conversation handling remains the same
+                history = self.get_session_history(session_id)
+                chain = self.default_template | self.llm
+                response = chain.invoke({
+                    "input": text,
+                    "chat_history": history.messages
+                })
+                history.add_user_message(text)
+                history.add_ai_message(response.content)
+                return response.content
+            
+            # MODIFIED: RAG conversation handling
+            history = self.get_session_history(session_id)
+            
+            # Prepare the input dictionary
+            input_dict = {
+                "input": text,
+                "chat_history": history.messages,
+            }
+            print(f"Response structure: {response}")  # Debugging line
+            # Get response from the RAG chain
+            response = self.conversational_rag_chain.invoke(
+                input_dict,
                 config={"configurable": {"session_id": session_id}}
             )
-            # Handle both possible output formats
-            if isinstance(response, dict):
-                return response.get("answer", response.get("output", response.get("text", str(response))))
-            return str(response)
+            
+            # Update conversation history
+            history.add_user_message(text)
+            if isinstance(response, dict) and "answer" in response:
+                history.add_ai_message(response["answer"])
+                return response["answer"]
+            else:
+                return str(response)
+                
         except Exception as e:
-            return f"Error processing message: {str(e)}"
-
+            st.error(f"Error in chat processing: {str(e)}")
+            return f"I encountered an error while processing your message. Please try again or reset the conversation."
     def chat_stream(self, text: str, session_id: str = "default"):
         """Stream chat responses"""
         try:
-            chain = self.rag_chain if self.vector_store else self.default_chain
-            
-            # Create an empty placeholder for the message
-            message_placeholder = st.empty()
-            full_response = ""
+            if not self.vector_store:
+                # Non-RAG streaming remains the same
+                history = self.get_session_history(session_id)
+                chain = self.default_template | self.llm
+                for chunk in chain.stream({
+                    "input": text,
+                    "chat_history": history.messages
+                }):
+                    if hasattr(chunk, 'content'):
+                        yield chunk.content
+                history.add_user_message(text)
+                history.add_ai_message("")
+                return
 
-            # Stream the response
-            for chunk in chain.stream(
-                {"input": text},
+            # MODIFIED: RAG streaming
+            history = self.get_session_history(session_id)
+            input_dict = {
+                "input": text,
+                "chat_history": history.messages,
+            }
+            
+            for chunk in self.conversational_rag_chain.stream(
+                input_dict,
                 config={"configurable": {"session_id": session_id}}
             ):
-                # Handle different types of chunks
-                if hasattr(chunk, "content"):
-                    # For ChatMessage objects
-                    content = chunk.content
-                elif isinstance(chunk, dict):
-                    # For dictionary responses, try different keys
-                    content = (
-                        chunk.get("output", "") or
-                        chunk.get("response", "") or
-                        chunk.get("answer", "") or
-                        chunk.get("text", "") or
-                        ""
-                    )
-                    # If content is still empty but we have a non-empty dict, convert it to string
-                    if not content and chunk:
-                        content = str(chunk)
-                else:
-                    # For string or other types
-                    content = str(chunk)
+                if isinstance(chunk, dict) and 'answer' in chunk:
+                    yield chunk["answer"]
+                elif hasattr(chunk, 'content'):
+                    yield chunk.content
                 
-                if content and not content.startswith('{'):  # Avoid printing raw JSON
-                    full_response += content
-                    message_placeholder.markdown(full_response + "▌")
-
-            # Final update without the cursor
-            message_placeholder.markdown(full_response)
-            return full_response
-
+            history.add_user_message(text)
+                        
         except Exception as e:
-            error_msg = f"Error processing message: {str(e)}"
-            st.error(error_msg)
-            return error_msg
-
-    def reset(self, session_id: str = "default"):
-        """Reset the conversation state for a session"""
-        if session_id in self.store:
-            del self.store[session_id]
+            yield f"Error processing message: {str(e)}"
