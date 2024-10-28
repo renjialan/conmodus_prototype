@@ -103,42 +103,43 @@ with chat_container:
             st.markdown(f"<div class='{message['role']}-message'>{message['content']}</div>", 
                        unsafe_allow_html=True)
 
+# # Chat input
+# if prompt := st.chat_input("What would you like to learn about?"):
+#     # Display user message
+#     with st.chat_message("user"):
+#         st.markdown(f"<div class='user-message'>{prompt}</div>", 
+#                    unsafe_allow_html=True)
+#     st.session_state.messages.append({"role": "user", "content": prompt})
+
+#     # Get bot response
+#     with st.chat_message("assistant"):
+#         message_placeholder = st.empty()
+#         full_response = ""
+        
+#         # Stream the response
+#         for chunk in st.session_state.chatBot.chat_stream(prompt):
+#             full_response += chunk
+#             message_placeholder.markdown(f"<div class='assistant-message'>{full_response}</div>", 
+#                                       unsafe_allow_html=True)
+    
+#     # Store the full response
+#     st.session_state.messages.append({"role": "assistant", "content": full_response})
+
 # Chat input
 if prompt := st.chat_input("What would you like to learn about?"):
     # Display user message
     with st.chat_message("user"):
-        st.markdown(f"<div class='user-message'>{prompt}</div>", 
-                   unsafe_allow_html=True)
-    st.session_state.messages.append({"role": "user", "content": prompt})
-
-    # Get bot response
-    with st.chat_message("assistant"):
-        message_placeholder = st.empty()
-        full_response = ""
-        
-        # Stream the response
-        for chunk in st.session_state.chatBot.chat_stream(prompt):
-            full_response += chunk
-            message_placeholder.markdown(f"<div class='assistant-message'>{full_response}</div>", 
-                                      unsafe_allow_html=True)
+        st.markdown(prompt)
     
-    # Store the full response
-    st.session_state.messages.append({"role": "assistant", "content": full_response})
+    # Get and display assistant response
+    with st.chat_message("assistant"):
+        response = st.session_state.chatBot.chat_stream(prompt)
+        
+    # Store messages
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    st.session_state.messages.append({"role": "assistant", "content": response})
 
-# Feedback
-# selected = st.feedback("thumbs")
-# if selected is not None:
-#     sentiment = "Negative" if selected == 0 else "Positive"
-#     append_values("1WAuUGd130tEnsjFzaYy7Tgq5H3zh-vvp7WXlg9WPNAs", "Sheet1!A1:C1", "USER_ENTERED", [["Session id: Test", str(st.session_state.messages), sentiment]])
-#     st.success("Thank you for your feedback!")
 
-# # Reset conversation button
-# if st.button("Start New Conversation"):
-#     st.session_state.chatBot.reset()
-#     st.session_state.messages = []
-#     st.rerun()
-
-# Footer
 st.markdown("---")
 st.markdown("""
     <div style='text-align: center; color: #666;'>
