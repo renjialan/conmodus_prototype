@@ -20,7 +20,7 @@ class LMMentorBot:
             # Initialize core components
             self.llm = ChatOpenAI(
                 temperature=0.7,
-                model_name="gpt-4",
+                model_name="gpt-4o-mini",
                 openai_api_key=self.openai_key,
                 streaming=True,
                 model_kwargs={"response_format": {"type": "text"}}
@@ -257,3 +257,11 @@ class LMMentorBot:
                         
         except Exception as e:
             yield f"Error processing message: {str(e)}"
+            error_msg = f"Error processing message: {str(e)}"
+            st.error(error_msg)
+            return error_msg
+
+    def reset(self, session_id: str = "default"):
+        """Reset the conversation state for a session"""
+        if session_id in self.store:
+            del self.store[session_id]
