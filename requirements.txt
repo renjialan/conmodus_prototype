@@ -233,3 +233,4 @@ langchain-community
 pypdf
 unstructured
 python-magic
+langchain-google-genai

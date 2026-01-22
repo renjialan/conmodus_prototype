@@ -19,7 +19,7 @@ class LMMentorBot:
         try:
             # Initialize API keys - try st.secrets first, then env vars
             self.anthropic_key = st.secrets.get("ANTHROPIC_API_KEY") or st.secrets.get("ANTHROPIC_KEY") or os.getenv("ANTHROPIC_API_KEY")
-            self.openai_key = st.secrets.get("OPENAI_KEY") or os.getenv("OPENAI_API_KEY", "")
+            self.google_key = st.secrets.get("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY", "")
 
             if not self.anthropic_key:
                 raise KeyError("ANTHROPIC_API_KEY not found")
@@ -34,7 +34,7 @@ class LMMentorBot:
                 streaming=True,
             )
 
-            self.file_parser = FileParser(self.openai_key)
+            self.file_parser = FileParser(self.google_key)
             
         except KeyError:
             st.error("Required API keys not found in secrets. Please add them to your Streamlit secrets.")

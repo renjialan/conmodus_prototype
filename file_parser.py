@@ -10,12 +10,15 @@ from langchain_community.document_loaders import (
     PythonLoader
 )
 from langchain_community.vectorstores import Chroma
-from langchain_openai import OpenAIEmbeddings
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from pypdf import PdfReader
 
 class FileParser:
-    def __init__(self, openai_key: str):
-        self.embeddings = OpenAIEmbeddings(openai_api_key=openai_key)
+    def __init__(self, google_api_key: str):
+        self.embeddings = GoogleGenerativeAIEmbeddings(
+            model="models/embedding-001",
+            google_api_key=google_api_key
+        )
         # Specific splitter for educational materials
         self.text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=1500,
