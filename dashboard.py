@@ -69,18 +69,22 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 def parse_options(text):
-    """Parse [OPTIONS]...[/OPTIONS] block from response"""
+    """Parse [OPTIONS]...[/OPTIONS] block from response - get the LAST one"""
     pattern = r'\[OPTIONS\](.*?)\[/OPTIONS\]'
-    match = re.search(pattern, text, re.DOTALL)
+    matches = list(re.finditer(pattern, text, re.DOTALL | re.IGNORECASE))
 
-    if match:
+    if matches:
+        # Use the last OPTIONS block (most recent question)
+        match = matches[-1]
         options_text = match.group(1).strip()
-        # Parse individual options (A), B), etc.)
-        options = re.findall(r'([A-D])\)\s*(.+?)(?=(?:[A-D]\)|$))', options_text, re.DOTALL)
+
+        # Parse individual options - handle both newline and inline formats
+        # Match A) ... B) ... patterns
+        options = re.findall(r'([A-D])\)\s*([^A-D]+?)(?=(?:\s*[A-D]\)|$))', options_text, re.DOTALL)
         options = [(letter, text.strip()) for letter, text in options]
 
-        # Get the message without the options block
-        message_without_options = text[:match.start()] + text[match.end():]
+        # Remove ALL options blocks from the message
+        message_without_options = re.sub(pattern, '', text, flags=re.DOTALL | re.IGNORECASE)
         message_without_options = message_without_options.strip()
 
         return message_without_options, options
@@ -94,16 +98,14 @@ def display_message_with_options(content, message_idx):
     # Display the message text
     st.markdown(message_text)
 
-    # Display options as buttons if present
+    # Display options as vertical buttons if present
     if options:
         st.markdown("**Select your answer:**")
-        cols = st.columns(len(options))
         for i, (letter, option_text) in enumerate(options):
-            with cols[i]:
-                button_label = f"{letter}) {option_text[:50]}..." if len(option_text) > 50 else f"{letter}) {option_text}"
-                if st.button(button_label, key=f"opt_{message_idx}_{letter}", use_container_width=True):
-                    st.session_state.pending_input = f"{letter}) {option_text}"
-                    st.rerun()
+            button_label = f"{letter}) {option_text}"
+            if st.button(button_label, key=f"opt_{message_idx}_{letter}", use_container_width=True):
+                st.session_state.pending_input = f"{letter}) {option_text}"
+                st.rerun()
 
 # Initialize chat bot
 if "chatBot" not in st.session_state:
