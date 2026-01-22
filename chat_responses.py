@@ -2,7 +2,7 @@ import os
 import streamlit as st
 from typing import Optional, Dict
 from dotenv import load_dotenv
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_anthropic import ChatAnthropic
 
 load_dotenv()  # Load from .env file
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
@@ -18,17 +18,18 @@ class LMMentorBot:
     def __init__(self):
         try:
             # Initialize API keys - try st.secrets first, then env vars
+            self.anthropic_key = st.secrets.get("ANTHROPIC_API_KEY") or st.secrets.get("ANTHROPIC_KEY") or os.getenv("ANTHROPIC_API_KEY")
             self.google_key = st.secrets.get("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY", "")
 
-            if not self.google_key:
-                raise KeyError("GEMINI_API_KEY not found")
+            if not self.anthropic_key:
+                raise KeyError("ANTHROPIC_API_KEY not found")
 
             self.setup_environment()
 
-            # Initialize core components - using Gemini for both chat and embeddings
-            self.llm = ChatGoogleGenerativeAI(
-                model="gemini-1.5-flash",
-                google_api_key=self.google_key,
+            # Initialize core components
+            self.llm = ChatAnthropic(
+                model="claude-sonnet-4-20250514",
+                anthropic_api_key=self.anthropic_key,
                 temperature=0.7,
                 streaming=True,
             )
