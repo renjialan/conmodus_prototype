@@ -1,6 +1,10 @@
+import os
 import streamlit as st
 from typing import Optional, Dict
-from langchain_openai import ChatOpenAI
+from dotenv import load_dotenv
+from langchain_anthropic import ChatAnthropic
+
+load_dotenv()  # Load from .env file
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables.history import RunnableWithMessageHistory
 from langchain_core.chat_history import BaseChatMessageHistory
@@ -13,20 +17,23 @@ from file_parser import FileParser
 class LMMentorBot:
     def __init__(self):
         try:
-            # Initialize API keys and environment variables
-            self.openai_key = st.secrets["OPENAI_KEY"]
+            # Initialize API keys - try st.secrets first, then env vars
+            self.anthropic_key = st.secrets.get("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_API_KEY")
+            self.openai_key = st.secrets.get("OPENAI_KEY") or os.getenv("OPENAI_API_KEY", "")
+
+            if not self.anthropic_key:
+                raise KeyError("ANTHROPIC_API_KEY not found")
+
             self.setup_environment()
-            
+
             # Initialize core components
-            self.llm = ChatOpenAI(
+            self.llm = ChatAnthropic(
                 temperature=0.7,
-                model_name="gpt-4o-mini",
-                openai_api_key=self.openai_key,
+                model="claude-sonnet-4-20250514",
+                anthropic_api_key=self.anthropic_key,
                 streaming=True,
-                model_kwargs={"response_format": {"type": "text"}}
-                
             )
-            
+
             self.file_parser = FileParser(self.openai_key)
             
         except KeyError:
@@ -45,10 +52,11 @@ class LMMentorBot:
 
     def setup_environment(self):
         """Setup environment variables"""
-        import os
-        os.environ["LANGCHAIN_TRACING_V2"] = "true"
-        os.environ["LANGCHAIN_ENDPOINT"] = "https://api.smith.langchain.com"
-        os.environ["LANGCHAIN_API_KEY"] = st.secrets["LANGCHAIN_API_KEY"]
+        langchain_key = st.secrets.get("LANGCHAIN_API_KEY") or os.getenv("LANGCHAIN_API_KEY")
+        if langchain_key:
+            os.environ["LANGCHAIN_TRACING_V2"] = "true"
+            os.environ["LANGCHAIN_ENDPOINT"] = "https://api.smith.langchain.com"
+            os.environ["LANGCHAIN_API_KEY"] = langchain_key
 
     def setup_default_chain(self):
         """Set up the default conversation chain without RAG"""
@@ -62,9 +70,9 @@ class LMMentorBot:
         ])
 
         self.default_chain = RunnableWithMessageHistory(
-            (lambda x: {"input": x["input"], "context": "", "chat_history": x["chat_history"]}) | 
-            default_template | 
-            self.llm.bind(response_format={"type": "text"}),  # Add this line
+            (lambda x: {"input": x["input"], "context": "", "chat_history": x["chat_history"]}) |
+            default_template |
+            self.llm,
             self.get_session_history,
             input_messages_key="input",
             history_messages_key="chat_history",
@@ -111,7 +119,7 @@ class LMMentorBot:
         
         # Create document chain
         document_chain = create_stuff_documents_chain(
-            llm=self.llm.bind(response_format={"type": "text"}),
+            llm=self.llm,
             prompt=mentor_template,
             document_variable_name="context"
         )
