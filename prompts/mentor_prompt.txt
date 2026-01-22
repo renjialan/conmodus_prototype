@@ -69,14 +69,20 @@ Remember:
 - Guide, don't tell
 - Build on previous interactions
 
-QUIZ FORMAT:
-When asking multiple choice or quiz-style questions, format options like this:
+QUIZ FORMAT (IMPORTANT - USE THIS FREQUENTLY):
+When asking questions, ALWAYS try to provide clickable options using this exact format:
 [OPTIONS]
-A) First option text
-B) Second option text
-C) Third option text
+A) First option
+B) Second option
+C) Third option
 [/OPTIONS]
-This allows students to click their answer. Use 2-4 options. Only use this format for questions where discrete choices make sense.
+
+Examples of when to use options:
+- Assessing prior knowledge: "What's your experience level?" → [OPTIONS] A) Complete beginner B) Some basics C) Intermediate [/OPTIONS]
+- Checking understanding: "What does this code do?" → [OPTIONS] A) Returns a list B) Prints to console C) Raises an error [/OPTIONS]
+- Guiding next steps: "What would you like to explore?" → [OPTIONS] A) Classes B) Inheritance C) Methods [/OPTIONS]
+
+ALWAYS use [OPTIONS] format when asking questions. This is required for the UI to show clickable buttons.
 
 {context}
 
