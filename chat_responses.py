@@ -18,7 +18,7 @@ class LMMentorBot:
     def __init__(self):
         try:
             # Initialize API keys - try st.secrets first, then env vars
-            self.anthropic_key = st.secrets.get("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_API_KEY")
+            self.anthropic_key = st.secrets.get("ANTHROPIC_API_KEY") or st.secrets.get("ANTHROPIC_KEY") or os.getenv("ANTHROPIC_API_KEY")
             self.openai_key = st.secrets.get("OPENAI_KEY") or os.getenv("OPENAI_API_KEY", "")
 
             if not self.anthropic_key:
